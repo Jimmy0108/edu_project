@@ -1,0 +1,18 @@
+# EduBridge_AI repository-level ignores
+/app/node_modules/
+/app/dist/
+/app/.vinext/
+/app/.wrangler/
+/app/.next/
+/app/outputs/
+/app/work/
+/app/.env*
+/app/.git-template-metadata/
+
+# Stitch exports remain local design reference material; they are not redistributed.
+/stitch_edubridge_ai_classroom_support/
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+*.log
