@@ -11,6 +11,7 @@
 
 # Stitch exports remain local design reference material; they are not redistributed.
 /stitch_edubridge_ai_classroom_support/
+/package-lock.json
 
 # Local editor and operating-system files
 .DS_Store
