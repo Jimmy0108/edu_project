@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type View = "teacher" | "visual" | "reading" | "focus";
 
-const transcript = "收到陌生郵件時，先不要點連結或下載附件。請檢查寄件者網域、網址拼字，以及信件是否要求你立刻提供帳號或密碼。";
+const demoTranscript = "收到陌生郵件時，先不要點連結或下載附件。請檢查寄件者網域、網址拼字，以及信件是否要求你立刻提供帳號或密碼。";
 
 const concepts = [
   ["寄件者網域", "辨識關鍵", "查看 @ 後方的完整網域；不要只看寄件者顯示名稱。"],
@@ -38,19 +38,71 @@ function Logo() {
   return <div className="logo"><b aria-hidden="true">⌁</b><span><strong>EduBridge</strong> AI<small>課堂即時學習支援</small></span></div>;
 }
 
-function TranscriptPanel({ compact = false }: { compact?: boolean }) {
+function TranscriptPanel({ compact = false, text = demoTranscript }: { compact?: boolean; text?: string }) {
   return <section className={"transcript-panel " + (compact ? "compact" : "")} aria-label="教師即時字幕">
     <div className="panel-line"><strong><i />即時字幕</strong><span>教師 A 講授中・本段字幕已更新</span><button type="button">展開課堂原文</button></div>
-    <p className="transcript">「{transcript.slice(0, 7)}<mark className="warm">{transcript.slice(7, 18)}</mark>{transcript.slice(18, 23)}<mark>{transcript.slice(23, 28)}</mark>、<mark>{transcript.slice(29, 33)}</mark>{transcript.slice(33, 44)}<mark className="warm">{transcript.slice(44, -1)}</mark>。」</p>
+    <p className="transcript">「{text.slice(0, 7)}<mark className="warm">{text.slice(7, 18)}</mark>{text.slice(18, 23)}<mark>{text.slice(23, 28)}</mark>、<mark>{text.slice(29, 33)}</mark>{text.slice(33, 44)}<mark className="warm">{text.slice(44, -1)}</mark>。」</p>
     {!compact && <small>依據：目前課堂字幕。AI 卡片僅協助重組，不取代原文。</small>}
   </section>;
 }
 
-function TeacherView({ paused, onPause }: { paused: boolean; onPause: () => void }) {
+function LiveCaptureButton({ onTranscript }: { onTranscript: (text: string) => void }) {
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [status, setStatus] = useState<"idle" | "recording" | "sending" | "error">("idle");
+
+  async function sendChunk(audio: Blob) {
+    if (!audio.size) return;
+    setStatus("sending");
+    const formData = new FormData();
+    formData.set("audio", new File([audio], "lesson-audio.webm", { type: audio.type || "audio/webm" }));
+    try {
+      const response = await fetch("/api/transcribe", { method: "POST", body: formData });
+      const body = (await response.json()) as { text?: string; error?: string };
+      if (!response.ok || !body.text) throw new Error(body.error || "未取得逐字稿。");
+      onTranscript(body.text);
+      void fetch("/api/scaffold", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: body.text }),
+      });
+      setStatus("recording");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  async function toggleCapture() {
+    if (recorderRef.current) {
+      recorderRef.current.stop();
+      recorderRef.current = null;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setStatus("idle");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      streamRef.current = stream;
+      recorderRef.current = recorder;
+      recorder.addEventListener("dataavailable", (event) => void sendChunk(event.data));
+      recorder.start(4000);
+      setStatus("recording");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  const label = status === "recording" ? "停止即時語音" : status === "sending" ? "正在轉錄…" : status === "error" ? "麥克風或金鑰未就緒" : "啟動即時語音";
+  return <button type="button" onClick={toggleCapture}>{label}</button>;
+}
+
+function TeacherView({ paused, onPause, currentTranscript, onTranscript }: { paused: boolean; onPause: () => void; currentTranscript: string; onTranscript: (text: string) => void }) {
   return <main className="page-shell">
     <section className="lesson-bar"><div><span className="eyebrow">課綱對應・資訊科技 8 年級單元</span><h1>釣魚郵件與可疑連結辨識</h1></div><div className="lesson-status"><span>測試教室 801</span><span>教師 A 授課中</span><span>已連線 3 台載具</span></div></section>
     <div className="teacher-grid"><div className="teacher-main">
-      <section className="card"><div className="section-title"><h2>教師即時口述文字</h2><strong className="chip">收音連線中</strong></div><TranscriptPanel />
+      <section className="card"><div className="section-title"><h2>教師即時口述文字</h2><strong className="chip">收音連線中</strong></div><TranscriptPanel text={currentTranscript} />
         <div className="history"><p><time>10:13:20</time>大家想想看，如果收到一封看起來很像學校發的通知信，但要求你立刻改密碼，第一步該做什麼？</p><p><time>10:12:05</time>今天我們要學習的是如何在數位世界中保護自己的個人隱私與帳號安全。</p></div>
       </section>
       <section className="card material-card"><div><span className="eyebrow">教材知識卡已載入</span><h2>本課重點：三個釣魚郵件辨識線索</h2><p>教材內容用於協助術語與課程脈絡，不作為學生診斷或自動評分依據。</p></div><button className="primary" type="button">推送教材輔助卡</button></section>
@@ -59,7 +111,7 @@ function TeacherView({ paused, onPause }: { paused: boolean; onPause: () => void
       <section className="card"><div className="section-title"><h2>AI 鷹架處理狀態</h2><strong className="chip">{paused ? "已暫停" : "運作中"}</strong></div><ol className="status-list"><li>字幕片段已接收</li><li>教材知識卡已比對</li><li>依支援偏好建立視覺、閱讀、專注卡片</li></ol></section>
       <section className="card"><h2>學生端模式預覽</h2>{navItems.slice(1).map((item) => <div className="mode-preview" key={item.id}><span>{item.label.replace("學生：", "")}</span><strong>1 位學生使用</strong></div>)}</section>
     </aside></div>
-    <section className="action-bar"><span><i />進行中授課</span><button type="button" onClick={onPause}>{paused ? "恢復 AI 輔助" : "暫停 AI 輔助"}</button><button type="button">只顯示字幕</button><span className="spacer" /><button className="primary" type="button">廣播課堂提醒</button><button className="danger" type="button">結束課堂</button></section>
+    <section className="action-bar"><span><i />進行中授課</span><LiveCaptureButton onTranscript={onTranscript} /><button type="button" onClick={onPause}>{paused ? "恢復 AI 輔助" : "暫停 AI 輔助"}</button><button type="button">只顯示字幕</button><span className="spacer" /><button className="primary" type="button">廣播課堂提醒</button><button className="danger" type="button">結束課堂</button></section>
   </main>;
 }
 
@@ -100,7 +152,8 @@ function FocusView() {
 export default function Home() {
   const [view, setView] = useState<View>("teacher");
   const [paused, setPaused] = useState(false);
+  const [currentTranscript, setCurrentTranscript] = useState(demoTranscript);
   return <div className="site-root"><header className="site-header"><Logo /><span className="divider" /><strong className="product">EduBridge_AI</strong><nav aria-label="系統模式">{navItems.map((item) => <button aria-current={view === item.id ? "page" : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => setView(item.id)} type="button">{item.label}</button>)}</nav><div className="header-status"><span><i />測試教室 801</span><span>已連線 3 台</span><button type="button">個人閱讀偏好</button></div></header>
-    {view === "teacher" && <TeacherView paused={paused} onPause={() => setPaused(!paused)} />}{view === "visual" && <VisualView />}{view === "reading" && <ReadingView />}{view === "focus" && <FocusView />}
+    {view === "teacher" && <TeacherView paused={paused} onPause={() => setPaused(!paused)} currentTranscript={currentTranscript} onTranscript={setCurrentTranscript} />}{view === "visual" && <VisualView />}{view === "reading" && <ReadingView />}{view === "focus" && <FocusView />}
     <footer><Logo /><span>台灣智慧教室全納學習支援平台</span><span>依 UDL 原則設計</span><span>© 2026 EduBridge_AI</span></footer></div>;
 }

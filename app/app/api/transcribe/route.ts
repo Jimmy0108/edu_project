@@ -21,7 +21,8 @@ export async function POST(request: Request) {
   if (!(audio instanceof File)) {
     return Response.json({ error: "請提供 audio 檔案。" }, { status: 400 });
   }
-  if (!allowedAudioTypes.has(audio.type) || audio.size > MAX_AUDIO_BYTES) {
+  const mediaType = audio.type.split(";")[0];
+  if (!allowedAudioTypes.has(mediaType) || audio.size > MAX_AUDIO_BYTES) {
     return Response.json({ error: "音訊格式不支援或檔案超過 25 MB。" }, { status: 400 });
   }
 
