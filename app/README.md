@@ -6,7 +6,7 @@
 2. 所有學生先收到相同的文字資訊。
 3. 系統以一次結構化回應，提供視覺重點、閱讀鷹架與專注節奏三種介面。
 
-目前畫面以「釣魚郵件與可疑連結辨識」作為安全的資訊科技課示範內容。
+目前支援上傳 DOCX／PPTX／TXT／Markdown，亦可載入內建競賽報告示例；三種介面會依同一段新字幕與生成結果更新。詳細操作請看 DEMO_RUNBOOK.md。
 
 ## 本機啟動
 
@@ -37,9 +37,11 @@
 
 請傳送 JSON：
 
-    { "transcript": "教師本段逐字稿" }
+    { "transcript": "教師本段逐字稿", "materials": [{ "id": "slide-1", "file": "report.pptx", "location": "投影片 1", "text": "教師確認的教材", "confirmed": true }] }
 
 回傳一份同時包含 visual、reading 與 focus 欄位的 JSON；這避免為三種學生介面發送三次 LLM 請求。
+
+伺服器先進行 TF-IDF 文字向量檢索，只把最多三段相關教材送到模型。這是詞彙檢索型 RAG，尚未使用神經語意 embedding。回應包含 retrieved 候選段落與 sourceIds；後端會拒絕模型捏造的來源 ID，但不保證生成內容完全無誤。
 
 ### POST /api/transcribe
 

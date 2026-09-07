@@ -7,6 +7,8 @@ modified build.
 | Component | Use | Licence |
 | --- | --- | --- |
 | React and React DOM | User interface runtime | MIT |
+| fflate 0.8.3 | Browser-side Office ZIP decompression | MIT; full notice at public/licenses/fflate.txt |
+| @xmldom/xmldom 0.9.12 | XML DOM in automated tests only | MIT; full notice at public/licenses/xmldom.txt |
 | Next.js | Application framework | MIT |
 | Vite and vinext | Build and server runtime | MIT |
 | Cloudflare Vite plugin | Local worker integration | MIT |

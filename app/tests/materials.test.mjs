@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { DOMParser } from '@xmldom/xmldom';
+import { zipSync, strToU8 } from 'fflate';
+import { parseMaterial, retrieve, validateMaterials } from '../lib/materials.ts';
+import { demoScaffold, validScaffold } from '../lib/classroom.ts';
+
+globalThis.DOMParser = DOMParser;
+test('PPTX follows presentation order after slides have been rearranged', async () => {
+  const file = new File([zipSync({
+    'ppt/presentation.xml': strToU8('<p:presentation xmlns:p="presentation" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId r:id="second"/><p:sldId r:id="first"/></p:sldIdLst></p:presentation>'),
+    'ppt/_rels/presentation.xml.rels': strToU8('<Relationships xmlns="relationships"><Relationship Id="first" Target="slides/slide1.xml"/><Relationship Id="second" Target="slides/slide2.xml"/></Relationships>'),
+    'ppt/slides/slide1.xml': strToU8(slide('現在排第二')),
+    'ppt/slides/slide2.xml': strToU8(slide('現在排第一')),
+  })], 'reordered.pptx');
+  const chunks = await parseMaterial(file);
+  assert.equal(chunks[0].text, '現在排第一'); assert.equal(chunks[0].location, '投影片 1');
+});
+const p = text => `<a:p><a:r><a:t>${text}</a:t></a:r></a:p>`;
+const slide = text => `<p:sld xmlns:p="presentation" xmlns:a="drawing">${p(text)}</p:sld>`;
+
+test('PPTX extracts numeric slide order, entity text, and excludes notes', async () => {
+  const file = new File([zipSync({
+    'ppt/slides/slide10.xml': strToU8(slide('第三段')),
+    'ppt/slides/slide2.xml': strToU8(slide('RAG &amp; 教材檢索')),
+    'ppt/notesSlides/notesSlide1.xml': strToU8(slide('不可混入的備註')),
+  })], 'report.pptx');
+  const chunks = await parseMaterial(file);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].location, '投影片 2');
+  assert.equal(chunks[0].text, 'RAG & 教材檢索');
+  assert.equal(chunks[0].confirmed, false);
+});
+test('DOCX preserves paragraph references, including table text', async () => {
+  const file = new File([zipSync({ 'word/document.xml': strToU8('<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>教案目標</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>支持閱讀</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>') })], 'plan.docx');
+  const chunks = await parseMaterial(file);
+  assert.equal(chunks.length, 2); assert.equal(chunks[1].location, '段落 2'); assert.equal(chunks[1].text, '支持閱讀');
+});
+test('rejects unsupported, empty and oversized documents', async () => {
+  await assert.rejects(parseMaterial(new File(['x'], 'old.ppt')), /PPTX/);
+  await assert.rejects(parseMaterial(new File([' '], 'empty.txt')), /找不到/);
+  await assert.rejects(parseMaterial(new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'big.pptx')), /10 MB/);
+});
+test('retrieves confirmed relevant text only and handles unrelated query', () => {
+  const materials = [
+    { id: 'asr', file: 'report', location: '1', text: 'ASR 將教師聲音轉成即時字幕。', confirmed: true },
+    { id: 'rag', file: 'report', location: '2', text: 'RAG 從教材檢索相關段落，提供模型依據。', confirmed: true },
+    { id: 'draft', file: 'report', location: '3', text: 'RAG 教材檢索', confirmed: false },
+  ];
+  assert.equal(retrieve('RAG 如何從教材檢索？', materials)[0].id, 'rag');
+  assert.ok(!retrieve('RAG 教材檢索', materials).some(c => c.id === 'draft'));
+  assert.deepEqual(retrieve('photosynthesis', materials), []);
+  assert.equal(validateMaterials([...materials, materials[0]]), false);
+});
+test('generic fallback uses only source text and rejects malformed scaffold', () => {
+  const text = '植物利用陽光。RAG 檢索教材。'; const result = demoScaffold(text);
+  assert.equal(validScaffold(result), true);
+  assert.ok(result.keywords.every(w => text.includes(w)));
+  assert.equal(validScaffold({ ...result, focus: { goal: 'x', steps: [42] } }), false);
+  assert.equal(validScaffold(null), false);
+});

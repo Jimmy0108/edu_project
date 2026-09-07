@@ -35,8 +35,8 @@ export function demoScaffold(transcript: string): ScaffoldResponse {
     .map((sentence) => sentence.trim())
     .filter(Boolean);
   const firstSentence = sentences[0] ?? "等待教師說明後再整理重點。";
-  const keyCandidates = ["連結", "附件", "寄件者網域", "網址", "帳號", "密碼"];
-  const keywords = keyCandidates.filter((keyword) => text.includes(keyword)).slice(0, 5);
+  const keywords = Array.from(new Set(Array.from(new Intl.Segmenter("zh-TW", { granularity: "word" }).segment(text))
+    .filter(s => s.isWordLike && s.segment.length >= 2).map(s => s.segment))).slice(0, 6);
 
   return {
     sourceTranscript: text,
@@ -60,8 +60,19 @@ export function demoScaffold(transcript: string): ScaffoldResponse {
       goal: firstSentence,
       steps: sentences.slice(0, 4),
     },
-    sourceNotice: "示範模式僅依本段文字整理；正式模式會由伺服器端 AI 產生相同欄位。",
+    sourceNotice: "本地備援：僅分句與擷取原文，未使用生成式 AI。",
   };
+}
+
+export function validScaffold(value: unknown): value is ScaffoldResponse {
+  if (!value || typeof value !== "object") return false;
+  const v = value as ScaffoldResponse;
+  const str = (x: unknown) => typeof x === "string" && x.length <= 2000;
+  const strings = (x: unknown, max: number) => Array.isArray(x) && x.length <= max && x.every(str);
+  return str(v.summary) && str(v.sourceTranscript) && str(v.sourceNotice) && strings(v.keywords, 6) &&
+    !!v.visual && str(v.visual.title) && Array.isArray(v.visual.cards) && v.visual.cards.length <= 4 && v.visual.cards.every(c => c && str(c.label) && str(c.text)) &&
+    !!v.reading && str(v.reading.title) && Array.isArray(v.reading.steps) && v.reading.steps.length <= 4 && v.reading.steps.every(s => s && str(s.title) && str(s.text)) &&
+    !!v.focus && str(v.focus.goal) && strings(v.focus.steps, 4);
 }
 
 export function isSupportMode(value: unknown): value is SupportMode {

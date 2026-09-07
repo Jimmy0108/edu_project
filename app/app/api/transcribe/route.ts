@@ -16,13 +16,15 @@ export async function POST(request: Request) {
     );
   }
 
-  const formData = await request.formData();
+  let formData: FormData;
+  try { formData = await request.formData(); }
+  catch { return Response.json({ error: "請以表單傳送音訊。" }, { status: 400 }); }
   const audio = formData.get("audio");
   if (!(audio instanceof File)) {
     return Response.json({ error: "請提供 audio 檔案。" }, { status: 400 });
   }
   const mediaType = audio.type.split(";")[0];
-  if (!allowedAudioTypes.has(mediaType) || audio.size > MAX_AUDIO_BYTES) {
+  if (!allowedAudioTypes.has(mediaType) || !audio.size || audio.size > MAX_AUDIO_BYTES) {
     return Response.json({ error: "音訊格式不支援或檔案超過 25 MB。" }, { status: 400 });
   }
 
@@ -35,6 +37,7 @@ export async function POST(request: Request) {
   try {
     const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
+      signal: AbortSignal.timeout(25000),
       headers: { Authorization: "Bearer " + apiKey },
       body: upstreamForm,
     });
