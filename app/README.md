@@ -1,58 +1,43 @@
 # EduBridge_AI Classroom Support
 
-這是 EduBridge_AI 的可執行競賽原型。系統的先後順序固定為：
+## 產品流程
 
-1. 教師語音轉為即時逐字稿。
-2. 所有學生先收到相同的文字資訊。
-3. 系統以一次結構化回應，提供視覺重點、閱讀鷹架與專注節奏三種介面。
+1. `/prepare`：教師輸入目標、上傳 DOCX／PPTX／TXT／Markdown，確認教材後建立知識圖譜。
+2. `/learn?stage=pretest&student=A`：匿名學生完成 3–5 題前測；一次答錯只標記「需要再確認」。
+3. `/teach`：教師授課、同步字幕並控制目前概念；同一概念連續辨識兩次才自動推送提示。
+4. `/learn?stage=live&student=A`：學生先看到字幕，再自行展開一張已確認的支援卡。
 
-目前支援上傳 DOCX／PPTX／TXT／Markdown，亦可載入內建競賽報告示例；三種介面會依同一段新字幕與生成結果更新。詳細操作請看 DEMO_RUNBOOK.md。
+原本的視覺、閱讀與專注三個固定模式已改為私人呈現偏好，包括字幕、白話短句、一次一步、色覺安全、文字朗讀、減少動態及進階挑戰。系統不儲存或推測 ADHD、聽障、學習障礙等診斷名稱。
 
 ## 本機啟動
 
     npm install
     npm run dev
 
-開啟本機開發伺服器顯示的網址。Windows 中文資料夾名稱已由 build script 處理：
+驗證：
 
     npm run lint
-    npm run build
+    npx tsc --noEmit
+    npm test
 
-## 設定 Groq
+## Groq（選用）
 
-請在本機建立 .env.local，內容可參考 .env.example：
+在 `.env.local` 設定：
 
-    GROQ_API_KEY=請放入你自己的金鑰
+    GROQ_API_KEY=你的伺服器端金鑰
     GROQ_ASR_MODEL=whisper-large-v3
     GROQ_LLM_MODEL=openai/gpt-oss-20b
 
-不要把金鑰貼到聊天室、截圖或提交到 Git。無金鑰時：
+- 有金鑰時，`POST /api/lesson/prepare` 可提出結構化課程草稿，發布前仍需教師確認。
+- 無金鑰或模型輸出不符來源規則時，使用可重現的本地規則草稿。
+- 課中概念比對與卡片選擇在瀏覽器完成，不持續呼叫 LLM。
+- 語音金鑰只存在伺服器；無金鑰時音訊端點拒絕上傳且不會外傳。
 
-- POST /api/scaffold 回傳標示為 demo 的確定性整理。
-- POST /api/transcribe 回傳 503，且不會把音訊傳送到外部服務。
+## 資料與限制
 
-## API
+- Office 原檔在瀏覽器解析；課程包與匿名學習證據儲存在本機瀏覽器。
+- 競賽版使用 BroadcastChannel 同步同一瀏覽器分頁，不支援跨裝置教室。
+- 知識圖譜不是完整向量 RAG；教材來源仍以 ID 與 TF-IDF／概念映射核對。
+- 自動字幕、知識關係與前測狀態都可能有誤，教師可暫停、指定、修正或清除。
 
-### POST /api/scaffold
-
-請傳送 JSON：
-
-    { "transcript": "教師本段逐字稿", "materials": [{ "id": "slide-1", "file": "report.pptx", "location": "投影片 1", "text": "教師確認的教材", "confirmed": true }] }
-
-回傳一份同時包含 visual、reading 與 focus 欄位的 JSON；這避免為三種學生介面發送三次 LLM 請求。
-
-伺服器先進行 TF-IDF 文字向量檢索，只把最多三段相關教材送到模型。這是詞彙檢索型 RAG，尚未使用神經語意 embedding。回應包含 retrieved 候選段落與 sourceIds；後端會拒絕模型捏造的來源 ID，但不保證生成內容完全無誤。
-
-### POST /api/transcribe
-
-請使用 multipart/form-data 上傳 audio 欄位。端點驗證 MIME type 和 25 MB 上限，並在伺服器端才讀取 GROQ_API_KEY。
-
-## 文件
-
-- ARCHITECTURE.md：架構、限制與 RAG 演進方向。
-- SECURITY_AND_PRIVACY.md：隱私與上線前檢核。
-- THIRD_PARTY_NOTICES.md：第三方與設計來源聲明。
-
-## 授權
-
-程式碼採 MIT License。設計來源與第三方條款請見 THIRD_PARTY_NOTICES.md。
+操作流程見 `DEMO_RUNBOOK.md`，架構見 `ARCHITECTURE.md`。

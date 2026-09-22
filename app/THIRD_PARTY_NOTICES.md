@@ -17,6 +17,8 @@ modified build.
 | Stitch export | User-supplied design reference only; the production interface is reimplemented in this repository | Verify applicable Google Stitch terms before redistribution |
 | public/og.png | Original project social-preview illustration generated with OpenAI image generation | Follow the applicable service terms; no third-party brand asset is included |
 
+The bundled cybersecurity demo contains short, team-written paraphrases and links to official public guidance from Taiwan's Administration for Cyber Security, Taiwan's Ministry of Health and Welfare, CISA, and NIST. The webpages, agency names, and linked documents are not redistributed as project assets, and their inclusion does not imply endorsement. Verify the linked pages and update the recorded review date before a public presentation.
+
 The original educational text, project name, and team-created content remain
 the responsibility of the EduBridge_AI team. Do not add third-party images,
 logos, fonts, courseware, or model outputs unless their licence and attribution

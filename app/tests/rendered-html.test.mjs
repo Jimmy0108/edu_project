@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildFallbackLesson, confirmEntireLesson, PHISHING_SAMPLE_MATERIALS } from "../lib/lesson.ts";
 
 async function worker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -66,9 +67,41 @@ test("renders the EduBridge_AI classroom interface", async () => {
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /EduBridge_AI/);
-  assert.match(html, /課堂即時認知鷹架/);
-  assert.match(html, /視覺重點/);
+  assert.match(html, /知識圖譜驅動的課堂認知鷹架/);
+  assert.match(html, /教師主導/);
+  assert.match(html, /課前準備/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
+});
+
+test("prepares a source-grounded lesson package without an AI key", async () => {
+  const app = await worker();
+  const materials = [
+    { id: "m1", file: "lesson.pptx", location: "投影片 1", text: "釣魚郵件可能誘導使用者點擊可疑連結。", confirmed: true, sourceKind: "teacher-material" },
+    { id: "m2", file: "lesson.pptx", location: "投影片 2", text: "檢查寄件者網域與網址拼字。", confirmed: true, sourceKind: "teacher-material" },
+    { id: "m3", file: "lesson.pptx", location: "投影片 3", text: "多因素驗證增加第二道保護。", confirmed: true, sourceKind: "teacher-material" },
+  ];
+  const response = await app.fetch(new Request("http://localhost/api/lesson/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "釣魚辨識", grade: "八年級", objective: "辨認可疑郵件", materials }) }), env, ctx);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.provider, "local");
+  assert.equal(body.lesson.version, 2);
+  assert.ok(body.lesson.nodes.length >= 3 && body.lesson.nodes.length <= 12);
+  assert.ok(body.lesson.nodes.every(node => node.sourceIds.length > 0 && node.teacherConfirmed === false));
+  assert.ok(body.lesson.questions.length >= 3);
+});
+
+test("knowledge-graph scaffold requires teacher confirmation and stable repeated evidence", async () => {
+  const app = await worker();
+  const draft = buildFallbackLesson({ title: "釣魚辨識", grade: "八年級", objective: "辨認可疑郵件", materials: PHISHING_SAMPLE_MATERIALS.map(item => ({ ...item, confirmed: true })) });
+  const request = lesson => app.fetch(new Request("http://localhost/api/scaffold", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transcript: "檢查寄件者網域與拼字", previousConceptId: "sender-domain", lesson }) }), env, ctx);
+  assert.equal((await request(draft)).status, 400);
+  const response = await request(confirmEntireLesson(draft));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.retrievalMethod, "knowledge-graph-lexical");
+  assert.equal(body.decision.conceptId, "sender-domain");
+  assert.equal(body.decision.stable, true);
+  assert.ok(body.decision.sourceIds.length > 0);
 });
 
 test("provides clearly-labelled deterministic scaffolding without a key", async () => {

@@ -1,5 +1,6 @@
 import { demoScaffold, normalizeTranscript, validScaffold, type ScaffoldResponse } from "@/lib/classroom";
 import { retrieve, validateMaterials } from "@/lib/materials";
+import { decideLiveSupport, lessonReady, validateLessonPackage } from "@/lib/lesson";
 
 type GroqChoice = {
   message?: {
@@ -75,7 +76,7 @@ const responseSchema = {
 } as const;
 
 export async function POST(request: Request) {
-  let payload: { transcript?: unknown; materials?: unknown };
+  let payload: { transcript?: unknown; materials?: unknown; lesson?: unknown; previousConceptId?: unknown };
   try {
     const raw = await request.text();
     if (raw.length > 500_000) return Response.json({ error: "教材內容過大。" }, { status: 413 });
@@ -91,6 +92,12 @@ export async function POST(request: Request) {
   const transcript = normalizeTranscript(payload.transcript);
   if (!transcript) {
     return Response.json({ error: "transcript 不可為空白。" }, { status: 400 });
+  }
+
+  if (payload.lesson !== undefined) {
+    if (!validateLessonPackage(payload.lesson) || !lessonReady(payload.lesson)) return Response.json({ error: "課程包格式不正確、尚未經教師確認或先備關係形成循環。" }, { status: 400 });
+    const previous = typeof payload.previousConceptId === "string" ? payload.previousConceptId : null;
+    return Response.json({ decision: decideLiveSupport(transcript, payload.lesson, previous), retrievalMethod: "knowledge-graph-lexical", provider: "local" });
   }
 
   const fallback = demoScaffold(transcript);

@@ -1,13 +1,24 @@
 import { unzipSync, strFromU8 } from "fflate";
 
-export type Material = { id: string; file: string; location: string; text: string; confirmed: boolean };
+export type Material = {
+  id: string;
+  file: string;
+  location: string;
+  text: string;
+  confirmed: boolean;
+  sourceUrl?: string;
+  sourceKind?: "teacher-material" | "official-reference";
+  verifiedAt?: string;
+};
 export const MAX_CHUNKS = 200;
 
 export function validateMaterials(value: unknown): value is Material[] {
   return Array.isArray(value) && value.length <= MAX_CHUNKS && value.every(c =>
     c && typeof c.id === "string" && c.id.length <= 100 && typeof c.file === "string" && c.file.length <= 255 &&
     typeof c.location === "string" && c.location.length <= 100 && typeof c.text === "string" && c.text.length <= 2000 &&
-    typeof c.confirmed === "boolean") && new Set(value.map(c => c.id)).size === value.length;
+    typeof c.confirmed === "boolean" && (c.sourceUrl === undefined || (typeof c.sourceUrl === "string" && c.sourceUrl.length <= 500 && /^https:\/\//.test(c.sourceUrl))) &&
+    (c.sourceKind === undefined || c.sourceKind === "teacher-material" || c.sourceKind === "official-reference") &&
+    (c.verifiedAt === undefined || (typeof c.verifiedAt === "string" && c.verifiedAt.length <= 30))) && new Set(value.map(c => c.id)).size === value.length;
 }
 
 /** Sparse lexical TF-IDF vectors, with Chinese bigrams. No neural embedding API. */

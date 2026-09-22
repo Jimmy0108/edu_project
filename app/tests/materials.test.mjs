@@ -4,6 +4,7 @@ import { DOMParser } from '@xmldom/xmldom';
 import { zipSync, strToU8 } from 'fflate';
 import { parseMaterial, retrieve, validateMaterials } from '../lib/materials.ts';
 import { demoScaffold, validScaffold } from '../lib/classroom.ts';
+import { buildFallbackLesson, confirmEntireLesson, decideLiveSupport, lessonReady, PHISHING_SAMPLE_MATERIALS, updateMastery, validateLessonPackage } from '../lib/lesson.ts';
 
 globalThis.DOMParser = DOMParser;
 test('PPTX follows presentation order after slides have been rearranged', async () => {
@@ -58,4 +59,37 @@ test('generic fallback uses only source text and rejects malformed scaffold', ()
   assert.ok(result.keywords.every(w => text.includes(w)));
   assert.equal(validScaffold({ ...result, focus: { goal: 'x', steps: [42] } }), false);
   assert.equal(validScaffold(null), false);
+});
+
+test('builds a validated graph with official provenance and rejects prerequisite cycles', () => {
+  const materials = PHISHING_SAMPLE_MATERIALS.map(item => ({ ...item, confirmed: true }));
+  const lesson = buildFallbackLesson({ title: '釣魚郵件辨識', grade: '八年級', objective: '辨認並查證可疑郵件', materials });
+  assert.equal(validateLessonPackage(lesson), true);
+  assert.ok(lesson.nodes.some(node => node.sourceIds.some(id => id.startsWith('official-'))));
+  const confirmed = confirmEntireLesson(lesson);
+  assert.equal(lessonReady(confirmed), true);
+  const cycle = structuredClone(confirmed);
+  cycle.edges.push({ from: cycle.nodes[2].id, to: cycle.nodes[0].id, type: 'prerequisite', reason: '錯誤循環', sourceIds: [cycle.materials[0].id], teacherConfirmed: true });
+  assert.equal(validateLessonPackage(cycle), false);
+});
+
+test('requires a stable repeated concept and keeps mastery evidence reversible', () => {
+  const lesson = confirmEntireLesson(buildFallbackLesson({ title: '釣魚郵件辨識', grade: '八年級', objective: '辨認可疑郵件', materials: PHISHING_SAMPLE_MATERIALS.map(item => ({ ...item, confirmed: true })) }));
+  assert.equal(decideLiveSupport('今天天氣很好', lesson), null);
+  const first = decideLiveSupport('請檢查寄件者網域與拼字', lesson);
+  assert.equal(first.stable, false);
+  const second = decideLiveSupport('再次確認寄件者網域', lesson, first.conceptId);
+  assert.equal(second.stable, true);
+  const wrong = updateMastery(undefined, first.conceptId, false);
+  assert.equal(wrong.state, 'needs-check');
+  const corrected = updateMastery(wrong, first.conceptId, true);
+  assert.equal(corrected.state, 'ready');
+  assert.equal(corrected.evidenceCount, 2);
+});
+
+test('creates a valid minimum graph even from one confirmed generic lesson chunk', () => {
+  const lesson = buildFallbackLesson({ title: '單一教材', grade: '七年級', objective: '理解核心概念', materials: [{ id: 'only', file: 'lesson.txt', location: '段落 1', text: '地球繞著太陽運行，形成一年週期。', confirmed: true }] });
+  assert.equal(lesson.nodes.length, 3);
+  assert.equal(lesson.questions.length, 3);
+  assert.equal(validateLessonPackage(lesson), true);
 });
