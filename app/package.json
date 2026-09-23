@@ -10,6 +10,7 @@
     "build": "node scripts/build.mjs",
     "start": "vinext start",
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
+    "test:e2e": "node scripts/e2e-browser.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {

@@ -84,7 +84,8 @@ test("prepares a source-grounded lesson package without an AI key", async () => 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.provider, "local");
-  assert.equal(body.lesson.version, 2);
+  assert.equal(body.lesson.version, 3);
+  assert.ok(body.lesson.slides.length >= 1);
   assert.ok(body.lesson.nodes.length >= 3 && body.lesson.nodes.length <= 12);
   assert.ok(body.lesson.nodes.every(node => node.sourceIds.length > 0 && node.teacherConfirmed === false));
   assert.ok(body.lesson.questions.length >= 3);
@@ -136,4 +137,29 @@ test("does not send audio externally when the server key is absent", async () =>
   assert.equal(response.status, 503);
   const body = await response.json();
   assert.match(body.error, /不會把音訊傳送到任何外部服務/);
+});
+
+test("returns ordered verbose ASR quality metadata", async () => {
+  const oldKey = process.env.GROQ_API_KEY, oldFetch = globalThis.fetch;
+  process.env.GROQ_API_KEY = "test-only-placeholder";
+  let upstreamBody = { text: "請檢查寄件者網域", segments: [{ avg_logprob: -0.2, compression_ratio: 1.1, no_speech_prob: 0.02 }] };
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), "https://api.groq.com/openai/v1/audio/transcriptions");
+    assert.equal(options.body.get("response_format"), "verbose_json");
+    return Response.json(upstreamBody);
+  };
+  try {
+    const app = await worker();
+    const transcribe = async sequence => {
+      const form = new FormData(); form.set("audio", new File([new Uint8Array([1, 2, 3])], "clip.webm", { type: "audio/webm" })); form.set("sequence", String(sequence));
+      const response = await app.fetch(new Request("http://localhost/api/transcribe", { method: "POST", body: form }), { ...env, GROQ_API_KEY: "test-only-placeholder" }, ctx);
+      return { response, body: await response.json() };
+    };
+    const accepted = await transcribe(7);
+    assert.equal(accepted.response.status, 200); assert.equal(accepted.body.sequence, 7); assert.equal(accepted.body.quality, "accepted"); assert.equal(accepted.body.avgLogprob, -0.2);
+    upstreamBody = { text: "可能辨識錯誤", segments: [{ avg_logprob: -1.2, compression_ratio: 1.1, no_speech_prob: 0.1 }] };
+    assert.equal((await transcribe(8)).body.quality, "review");
+    upstreamBody = { text: "背景聲音", segments: [{ avg_logprob: -1.3, compression_ratio: 1.1, no_speech_prob: 0.8 }] };
+    assert.equal((await transcribe(9)).body.quality, "silence");
+  } finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GROQ_API_KEY; else process.env.GROQ_API_KEY = oldKey; }
 });

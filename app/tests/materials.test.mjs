@@ -4,7 +4,7 @@ import { DOMParser } from '@xmldom/xmldom';
 import { zipSync, strToU8 } from 'fflate';
 import { parseMaterial, retrieve, validateMaterials } from '../lib/materials.ts';
 import { demoScaffold, validScaffold } from '../lib/classroom.ts';
-import { buildFallbackLesson, confirmEntireLesson, decideLiveSupport, lessonReady, PHISHING_SAMPLE_MATERIALS, updateMastery, validateLessonPackage } from '../lib/lesson.ts';
+import { buildFallbackLesson, confirmEntireLesson, decideLiveSupport, drainOrderedSegments, lessonReady, migrateLessonPackage, PHISHING_SAMPLE_MATERIALS, updateMastery, validateLessonPackage } from '../lib/lesson.ts';
 
 globalThis.DOMParser = DOMParser;
 test('PPTX follows presentation order after slides have been rearranged', async () => {
@@ -71,6 +71,19 @@ test('builds a validated graph with official provenance and rejects prerequisite
   const cycle = structuredClone(confirmed);
   cycle.edges.push({ from: cycle.nodes[2].id, to: cycle.nodes[0].id, type: 'prerequisite', reason: '錯誤循環', sourceIds: [cycle.materials[0].id], teacherConfirmed: true });
   assert.equal(validateLessonPackage(cycle), false);
+  const badSlide = structuredClone(confirmed);
+  badSlide.slides[0].sourceIds = ['invented'];
+  assert.equal(validateLessonPackage(badSlide), false);
+});
+
+test('migrates a confirmed v2 lesson without inventing mastery history', () => {
+  const v3 = confirmEntireLesson(buildFallbackLesson({ title: '舊課程', grade: '八年級', objective: '理解概念', materials: PHISHING_SAMPLE_MATERIALS.map(item => ({ ...item, confirmed: true })) }));
+  const v2 = structuredClone(v3); v2.version = 2; delete v2.slides;
+  for (const profile of v2.profiles) delete profile.support.reading;
+  const migrated = migrateLessonPackage(v2);
+  assert.equal(migrated.version, 3);
+  assert.ok(migrated.slides.length > 0);
+  assert.equal(migrated.profiles[0].support.reading.fontScale, 1);
 });
 
 test('requires a stable repeated concept and keeps mastery evidence reversible', () => {
@@ -80,16 +93,42 @@ test('requires a stable repeated concept and keeps mastery evidence reversible',
   assert.equal(first.stable, false);
   const second = decideLiveSupport('再次確認寄件者網域', lesson, first.conceptId);
   assert.equal(second.stable, true);
-  const wrong = updateMastery(undefined, first.conceptId, false);
+  const wrong = updateMastery(undefined, first.conceptId, false, 'pretest', 'q1');
   assert.equal(wrong.state, 'needs-check');
-  const corrected = updateMastery(wrong, first.conceptId, true);
-  assert.equal(corrected.state, 'ready');
-  assert.equal(corrected.evidenceCount, 2);
+  const corrected = updateMastery(wrong, first.conceptId, true, 'live-check', 'q1');
+  assert.equal(corrected.state, 'developing');
+  const ready = updateMastery(corrected, first.conceptId, true, 'pretest', 'q2');
+  assert.equal(ready.state, 'ready');
+  assert.equal(ready.events.length, 3);
+  const teacherReady = updateMastery(wrong, first.conceptId, true, 'teacher');
+  assert.equal(teacherReady.state, 'ready');
+});
+
+test('rejects blank editable teaching content before publication', () => {
+  const lesson = confirmEntireLesson(buildFallbackLesson({ title: '內容核對', grade: '八年級', objective: '辨認可疑郵件', materials: PHISHING_SAMPLE_MATERIALS.map(item => ({ ...item, confirmed: true })) }));
+  lesson.cards[0].baseText = '   ';
+  assert.equal(validateLessonPackage(lesson), false);
+  lesson.cards[0].baseText = '依教材核對後的說明。';
+  lesson.questions[0].options[0] = '';
+  assert.equal(validateLessonPackage(lesson), false);
+});
+
+test('holds asynchronous transcript results until sequence gaps are filled', () => {
+  const buffer = new Map();
+  buffer.set(1, { sequence: 1, text: '第二段' });
+  const waiting = drainOrderedSegments(buffer, 0);
+  assert.deepEqual(waiting.values, []); assert.equal(waiting.nextSequence, 0);
+  buffer.set(0, { sequence: 0, text: '第一段' });
+  buffer.set(2, null);
+  const drained = drainOrderedSegments(buffer, waiting.nextSequence);
+  assert.deepEqual(drained.values.map(item => item.sequence), [0, 1]);
+  assert.equal(drained.nextSequence, 3);
 });
 
 test('creates a valid minimum graph even from one confirmed generic lesson chunk', () => {
   const lesson = buildFallbackLesson({ title: '單一教材', grade: '七年級', objective: '理解核心概念', materials: [{ id: 'only', file: 'lesson.txt', location: '段落 1', text: '地球繞著太陽運行，形成一年週期。', confirmed: true }] });
   assert.equal(lesson.nodes.length, 3);
   assert.equal(lesson.questions.length, 3);
+  assert.ok(lesson.slides.length >= 1);
   assert.equal(validateLessonPackage(lesson), true);
 });

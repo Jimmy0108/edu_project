@@ -1,4 +1,4 @@
-import { buildFallbackLesson, DEFAULT_PROFILES, validateLessonPackage, type LessonPackage } from "@/lib/lesson";
+import { buildFallbackLesson, buildSlidesFromMaterials, DEFAULT_PROFILES, validateLessonPackage, type LessonPackage } from "@/lib/lesson";
 import { validateMaterials } from "@/lib/materials";
 
 const responseSchema = {
@@ -51,13 +51,15 @@ export async function POST(request: Request) {
     const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const generated = JSON.parse(body.choices?.[0]?.message?.content || "null");
     const lesson: LessonPackage = {
-      version: 2, id: crypto.randomUUID(), title, grade, objective, createdAt: new Date().toISOString(), materials,
+      version: 3, id: crypto.randomUUID(), title, grade, objective, createdAt: new Date().toISOString(), materials,
       nodes: generated.nodes.map((item: object) => ({ ...item, teacherConfirmed: false })),
       edges: generated.edges.map((item: object) => ({ ...item, teacherConfirmed: false })),
       questions: generated.questions.map((item: object) => ({ ...item, teacherConfirmed: false })),
       cards: generated.cards.map((item: object) => ({ ...item, teacherConfirmed: false })),
-      profiles: DEFAULT_PROFILES.map(profile => ({ ...profile, support: { ...profile.support } })),
+      slides: [],
+      profiles: DEFAULT_PROFILES.map(profile => ({ ...profile, support: { ...profile.support, reading: { ...profile.support.reading } } })),
     };
+    lesson.slides = buildSlidesFromMaterials(materials, lesson.nodes, objective);
     if (!validateLessonPackage(lesson)) throw new Error("invalid graph");
     return Response.json({ lesson, provider: "groq", notice: "AI 已提出課程草稿；發布前仍須由教師逐項核對來源與關係。" });
   } catch {

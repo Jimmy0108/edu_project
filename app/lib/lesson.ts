@@ -30,13 +30,39 @@ export type SupportProfile = {
   textToSpeech: boolean;
   reducedMotion: boolean;
   advancedChallenge: boolean;
+  reading: ReadingPreferences;
+};
+
+export type ReadingPreferences = {
+  fontScale: 1 | 1.2 | 1.4;
+  lineSpacing: "standard" | "relaxed" | "wide";
+  lineFocus: "off" | "one" | "three";
+};
+
+export type EvidenceEvent = {
+  id: string;
+  conceptId: string;
+  kind: "pretest" | "live-check" | "teacher";
+  correct: boolean;
+  questionId: string | null;
+  createdAt: string;
 };
 
 export type MasteryEvidence = {
   conceptId: string;
   state: "unknown" | "needs-check" | "developing" | "ready";
-  evidenceCount: number;
+  events: EvidenceEvent[];
   lastUpdated: string;
+};
+
+export type LessonSlide = {
+  id: string;
+  order: number;
+  title: string;
+  body: string[];
+  conceptIds: string[];
+  sourceIds: string[];
+  teacherConfirmed: boolean;
 };
 
 export type DiagnosticQuestion = {
@@ -70,13 +96,14 @@ export type StudentProfile = {
 };
 
 export type LessonPackage = {
-  version: 2;
+  version: 3;
   id: string;
   title: string;
   grade: string;
   objective: string;
   createdAt: string;
   materials: Material[];
+  slides: LessonSlide[];
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
   questions: DiagnosticQuestion[];
@@ -94,12 +121,32 @@ export type LiveSupportDecision = {
 
 export type LiveFrame = {
   lessonId: string;
-  transcript: string;
+  activeSlideId: string | null;
   activeConceptId: string | null;
+  transcriptSegments: TranscriptSegment[];
   decision: LiveSupportDecision | null;
   paused: boolean;
   updatedAt: string;
 };
+
+export type TranscriptSegment = {
+  sequence: number;
+  text: string;
+  quality: "accepted" | "review" | "silence";
+  avgLogprob: number | null;
+  compressionRatio: number | null;
+  noSpeechProbability: number | null;
+};
+
+export function drainOrderedSegments<T>(buffer: Map<number, T | null>, nextSequence: number) {
+  const values: T[] = [];
+  while (buffer.has(nextSequence)) {
+    const value = buffer.get(nextSequence);
+    buffer.delete(nextSequence++);
+    if (value !== null && value !== undefined) values.push(value);
+  }
+  return { values, nextSequence };
+}
 
 export const DEFAULT_SUPPORT: SupportProfile = {
   captions: true,
@@ -109,6 +156,7 @@ export const DEFAULT_SUPPORT: SupportProfile = {
   textToSpeech: false,
   reducedMotion: false,
   advancedChallenge: false,
+  reading: { fontScale: 1, lineSpacing: "standard", lineFocus: "off" },
 };
 
 export const DEFAULT_PROFILES: StudentProfile[] = [
@@ -118,9 +166,10 @@ export const DEFAULT_PROFILES: StudentProfile[] = [
 ];
 
 const stringOk = (value: unknown, max = 2_000) => typeof value === "string" && value.length <= max;
-const stringList = (value: unknown, max: number) => Array.isArray(value) && value.length <= max && value.every(item => stringOk(item, 200));
+const requiredString = (value: unknown, max = 2_000) => stringOk(value, max) && (value as string).trim().length > 0;
+const stringList = (value: unknown, max: number) => Array.isArray(value) && value.length <= max && value.every(item => requiredString(item, 200));
 
-function hasPrerequisiteCycle(nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
+export function hasPrerequisiteCycle(nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
   const graph = new Map(nodes.map(node => [node.id, [] as string[]]));
   for (const edge of edges.filter(edge => edge.type === "prerequisite")) graph.get(edge.from)?.push(edge.to);
   const visiting = new Set<string>(), visited = new Set<string>();
@@ -137,21 +186,27 @@ function hasPrerequisiteCycle(nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
 export function validateLessonPackage(value: unknown): value is LessonPackage {
   if (!value || typeof value !== "object") return false;
   const lesson = value as LessonPackage;
-  if (lesson.version !== 2 || !stringOk(lesson.id, 100) || !stringOk(lesson.title, 200) || !stringOk(lesson.grade, 100) || !stringOk(lesson.objective, 500) || !stringOk(lesson.createdAt, 100)) return false;
-  if (!validateMaterials(lesson.materials) || !Array.isArray(lesson.nodes) || lesson.nodes.length < 1 || lesson.nodes.length > MAX_NODES || !Array.isArray(lesson.edges) || lesson.edges.length > MAX_EDGES || !Array.isArray(lesson.questions) || lesson.questions.length < 3 || lesson.questions.length > MAX_QUESTIONS || !Array.isArray(lesson.cards) || !Array.isArray(lesson.profiles)) return false;
+  if (lesson.version !== 3 || !requiredString(lesson.id, 100) || !requiredString(lesson.title, 200) || !requiredString(lesson.grade, 100) || !requiredString(lesson.objective, 500) || !requiredString(lesson.createdAt, 100)) return false;
+  if (!validateMaterials(lesson.materials) || !Array.isArray(lesson.slides) || lesson.slides.length < 1 || lesson.slides.length > 24 || !Array.isArray(lesson.nodes) || lesson.nodes.length < 1 || lesson.nodes.length > MAX_NODES || !Array.isArray(lesson.edges) || lesson.edges.length > MAX_EDGES || !Array.isArray(lesson.questions) || lesson.questions.length < 3 || lesson.questions.length > MAX_QUESTIONS || !Array.isArray(lesson.cards) || !Array.isArray(lesson.profiles)) return false;
   if (lesson.nodes.some(item => !item || typeof item !== "object") || lesson.edges.some(item => !item || typeof item !== "object") || lesson.questions.some(item => !item || typeof item !== "object") || lesson.cards.some(item => !item || typeof item !== "object") || lesson.profiles.some(item => !item || typeof item !== "object" || !item.support || typeof item.support !== "object")) return false;
   const materialIds = new Set(lesson.materials.map(item => item.id));
   const nodeIds = new Set(lesson.nodes.map(node => node.id));
   const validSources = (ids: unknown) => stringList(ids, 5) && (ids as string[]).length > 0 && (ids as string[]).every(id => materialIds.has(id));
-  if (nodeIds.size !== lesson.nodes.length || lesson.nodes.some(node => !stringOk(node.id, 100) || !stringOk(node.label, 100) || !stringOk(node.description, 500) || !stringList(node.aliases, 8) || !validSources(node.sourceIds) || typeof node.teacherConfirmed !== "boolean")) return false;
-  if (lesson.edges.some(edge => !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to || !["prerequisite", "part_of", "related"].includes(edge.type) || !stringOk(edge.reason, 500) || !validSources(edge.sourceIds) || typeof edge.teacherConfirmed !== "boolean") || hasPrerequisiteCycle(lesson.nodes, lesson.edges)) return false;
-  if (lesson.questions.some(question => !stringOk(question.id, 100) || !stringOk(question.prompt, 500) || !stringList(question.options, 4) || question.options.length < 2 || !Number.isInteger(question.correctIndex) || question.correctIndex < 0 || question.correctIndex >= question.options.length || !stringList(question.conceptIds, 2) || question.conceptIds.some(id => !nodeIds.has(id)) || !stringOk(question.feedback, 500) || !validSources(question.sourceIds) || typeof question.teacherConfirmed !== "boolean")) return false;
-  if (lesson.cards.some(card => !stringOk(card.id, 100) || !nodeIds.has(card.conceptId) || !stringOk(card.title, 200) || !stringOk(card.baseText, 700) || !stringOk(card.simplifiedText, 700) || !stringList(card.focusSteps, 4) || !stringList(card.keywords, 6) || !stringOk(card.advancedPrompt, 500) || !validSources(card.sourceIds) || typeof card.teacherConfirmed !== "boolean")) return false;
-  return lesson.profiles.length >= 1 && lesson.profiles.length <= 6 && lesson.profiles.every(profile => stringOk(profile.id, 30) && stringOk(profile.displayName, 50) && profile.support && Object.values(profile.support).every(value => typeof value === "boolean"));
+  if (nodeIds.size !== lesson.nodes.length || lesson.nodes.some(node => !requiredString(node.id, 100) || !requiredString(node.label, 100) || !requiredString(node.description, 500) || !stringList(node.aliases, 8) || !validSources(node.sourceIds) || typeof node.teacherConfirmed !== "boolean")) return false;
+  if (lesson.edges.some(edge => !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to || !["prerequisite", "part_of", "related"].includes(edge.type) || !requiredString(edge.reason, 500) || !validSources(edge.sourceIds) || typeof edge.teacherConfirmed !== "boolean") || hasPrerequisiteCycle(lesson.nodes, lesson.edges)) return false;
+  if (lesson.questions.some(question => !requiredString(question.id, 100) || !requiredString(question.prompt, 500) || !stringList(question.options, 4) || question.options.length < 2 || !Number.isInteger(question.correctIndex) || question.correctIndex < 0 || question.correctIndex >= question.options.length || !stringList(question.conceptIds, 2) || question.conceptIds.length < 1 || question.conceptIds.some(id => !nodeIds.has(id)) || !requiredString(question.feedback, 500) || !validSources(question.sourceIds) || typeof question.teacherConfirmed !== "boolean")) return false;
+  if (lesson.cards.some(card => !requiredString(card.id, 100) || !nodeIds.has(card.conceptId) || !requiredString(card.title, 200) || !requiredString(card.baseText, 700) || !requiredString(card.simplifiedText, 700) || !stringList(card.focusSteps, 4) || card.focusSteps.length < 1 || !stringList(card.keywords, 6) || card.keywords.length < 1 || !requiredString(card.advancedPrompt, 500) || !validSources(card.sourceIds) || typeof card.teacherConfirmed !== "boolean")) return false;
+  if (lesson.slides.some(slide => !requiredString(slide.id, 100) || !Number.isInteger(slide.order) || !requiredString(slide.title, 200) || !stringList(slide.body, 12) || slide.body.length < 1 || !stringList(slide.conceptIds, 6) || slide.conceptIds.length < 1 || slide.conceptIds.some(id => !nodeIds.has(id)) || !validSources(slide.sourceIds) || typeof slide.teacherConfirmed !== "boolean")) return false;
+  return lesson.profiles.length >= 1 && lesson.profiles.length <= 6 && lesson.profiles.every(profile => {
+    const support = profile.support;
+    if (!requiredString(profile.id, 30) || !requiredString(profile.displayName, 50) || !support || typeof support !== "object") return false;
+    const booleanKeys: Array<Exclude<keyof SupportProfile, "reading">> = ["captions", "simplifiedText", "focusSteps", "colorSafe", "textToSpeech", "reducedMotion", "advancedChallenge"];
+    return booleanKeys.every(key => typeof support[key] === "boolean") && !!support.reading && [1, 1.2, 1.4].includes(support.reading.fontScale) && ["standard", "relaxed", "wide"].includes(support.reading.lineSpacing) && ["off", "one", "three"].includes(support.reading.lineFocus);
+  });
 }
 
 export function lessonReady(lesson: LessonPackage) {
-  return lesson.nodes.every(item => item.teacherConfirmed) && lesson.edges.every(item => item.teacherConfirmed) && lesson.questions.every(item => item.teacherConfirmed) && lesson.cards.every(item => item.teacherConfirmed) && !hasPrerequisiteCycle(lesson.nodes, lesson.edges);
+  return lesson.slides.every(item => item.teacherConfirmed) && lesson.nodes.every(item => item.teacherConfirmed) && lesson.edges.every(item => item.teacherConfirmed) && lesson.questions.every(item => item.teacherConfirmed) && lesson.cards.every(item => item.teacherConfirmed) && !hasPrerequisiteCycle(lesson.nodes, lesson.edges);
 }
 
 function overlapScore(query: string, text: string) {
@@ -181,23 +236,62 @@ export function decideLiveSupport(transcript: string, lesson: LessonPackage, pre
   };
 }
 
-export function updateMastery(current: MasteryEvidence | undefined, conceptId: string, correct: boolean): MasteryEvidence {
-  const evidenceCount = (current?.evidenceCount || 0) + 1;
-  let state: MasteryEvidence["state"];
-  if (!correct) state = "needs-check";
-  else if (current?.state === "developing" || current?.state === "ready" || evidenceCount >= 2) state = "ready";
-  else state = "developing";
-  return { conceptId, state, evidenceCount, lastUpdated: new Date().toISOString() };
+export function updateMastery(current: MasteryEvidence | undefined, conceptId: string, correct: boolean, kind: EvidenceEvent["kind"] = "live-check", questionId: string | null = null): MasteryEvidence {
+  const createdAt = new Date().toISOString();
+  const event: EvidenceEvent = { id: crypto.randomUUID(), conceptId, kind, correct, questionId, createdAt };
+  const events = [...(current?.events || []), event].slice(-12);
+  const latest = events.at(-1);
+  const correctKinds = new Set(events.filter(item => item.correct).map(item => item.kind));
+  const teacherReady = events.some(item => item.kind === "teacher" && item.correct);
+  const state: MasteryEvidence["state"] = !latest?.correct ? "needs-check" : teacherReady || correctKinds.size >= 2 ? "ready" : "developing";
+  return { conceptId, state, events, lastUpdated: createdAt };
 }
 
 export function confirmEntireLesson(lesson: LessonPackage): LessonPackage {
   return {
     ...lesson,
+    slides: lesson.slides.map(item => ({ ...item, teacherConfirmed: true })),
     nodes: lesson.nodes.map(item => ({ ...item, teacherConfirmed: true })),
     edges: lesson.edges.map(item => ({ ...item, teacherConfirmed: true })),
     questions: lesson.questions.map(item => ({ ...item, teacherConfirmed: true })),
     cards: lesson.cards.map(item => ({ ...item, teacherConfirmed: true })),
   };
+}
+
+export function buildSlidesFromMaterials(materials: Material[], nodes: KnowledgeNode[], objective: string): LessonSlide[] {
+  const teacherMaterials = materials.filter(item => item.sourceKind !== "official-reference");
+  const source = teacherMaterials.length ? teacherMaterials : materials;
+  const grouped = new Map<string, Material[]>();
+  for (const item of source) {
+    const key = `${item.file}::${item.location.replace(/（續 \d+）$/, "")}`;
+    grouped.set(key, [...(grouped.get(key) || []), item]);
+  }
+  const slides = [...grouped.values()].slice(0, 24).map((items, index) => {
+    const text = items.map(item => item.text.trim()).filter(Boolean).join("\n");
+    const lines = text.split(/\n+/).map(line => line.trim()).filter(Boolean);
+    const location = items[0].location.replace(/（續 \d+）$/, "");
+    const matchedConceptIds = nodes.filter(node => [node.label, ...node.aliases].some(alias => alias.length >= 2 && text.toLowerCase().includes(alias.toLowerCase()))).map(node => node.id).slice(0, 6);
+    const sourceBackedConceptIds = nodes.filter(node => node.sourceIds.some(id => items.some(item => item.id === id))).map(node => node.id).slice(0, 3);
+    const conceptIds = matchedConceptIds.length ? matchedConceptIds : sourceBackedConceptIds;
+    return { id: `slide-${index + 1}`, order: index + 1, title: lines[0]?.slice(0, 100) || location, body: (lines.length > 1 ? lines.slice(1) : [text]).map(line => line.slice(0, 500)).slice(0, 12), conceptIds, sourceIds: items.map(item => item.id).slice(0, 5), teacherConfirmed: false };
+  });
+  if (slides.length) return slides;
+  const material = materials[0];
+  return [{ id: "slide-1", order: 1, title: "本堂學習目標", body: [objective], conceptIds: nodes.slice(0, 3).map(node => node.id), sourceIds: [material.id], teacherConfirmed: false }];
+}
+
+export function migrateLessonPackage(value: unknown): LessonPackage | null {
+  if (validateLessonPackage(value)) return value;
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) return null;
+  const old = value as Omit<LessonPackage, "version" | "slides" | "profiles"> & { version: 2; profiles: Array<Omit<StudentProfile, "support"> & { support: Omit<SupportProfile, "reading"> }> };
+  if (!Array.isArray(old.materials) || !Array.isArray(old.nodes) || !Array.isArray(old.profiles) || typeof old.objective !== "string") return null;
+  const migrated: LessonPackage = {
+    ...old,
+    version: 3,
+    slides: buildSlidesFromMaterials(old.materials, old.nodes, old.objective).map(slide => ({ ...slide, teacherConfirmed: true })),
+    profiles: old.profiles.map(profile => ({ ...profile, support: { ...profile.support, reading: { ...DEFAULT_SUPPORT.reading } } })),
+  };
+  return validateLessonPackage(migrated) ? migrated : null;
 }
 
 export function buildFallbackLesson(input: { title: string; grade: string; objective: string; materials: Material[] }): LessonPackage {
@@ -232,7 +326,8 @@ export function buildFallbackLesson(input: { title: string; grade: string; objec
   }));
   if (phishing) { questions[1].correctIndex = 1; questions[2].correctIndex = 0; questions[3].correctIndex = 0; if (questions[4]) questions[4].correctIndex = 0; }
   const cards: SupportCard[] = nodes.map(node => ({ id: `card-${node.id}`, conceptId: node.id, title: node.label, baseText: node.description, simplifiedText: `先記住：${node.description.split(/[。；]/)[0]}。`, focusSteps: ["先停一下，不急著操作。", `找出畫面中的「${node.label}」。`, "依教材規則完成查證。"], keywords: node.aliases.slice(0, 4), advancedPrompt: `想一想：若攻擊者刻意模仿「${node.label}」的正常特徵，還能用哪些證據交叉驗證？`, sourceIds: node.sourceIds, teacherConfirmed: false }));
-  return { version: 2, id: crypto.randomUUID(), title: input.title.slice(0, 200), grade: input.grade.slice(0, 100), objective: input.objective.slice(0, 500), createdAt: new Date().toISOString(), materials, nodes, edges, questions, cards, profiles: DEFAULT_PROFILES.map(profile => ({ ...profile, support: { ...profile.support } })) };
+  const slides = buildSlidesFromMaterials(materials, nodes, input.objective);
+  return { version: 3, id: crypto.randomUUID(), title: input.title.slice(0, 200), grade: input.grade.slice(0, 100), objective: input.objective.slice(0, 500), createdAt: new Date().toISOString(), materials, slides, nodes, edges, questions, cards, profiles: DEFAULT_PROFILES.map(profile => ({ ...profile, support: { ...profile.support, reading: { ...profile.support.reading } } })) };
 }
 
 export const PHISHING_SAMPLE_MATERIALS: Material[] = [

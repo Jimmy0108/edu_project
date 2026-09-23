@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { BrandHeader, PageFooter, StatusPill } from "../ui";
 import { updateMastery, type LessonPackage, type LiveFrame, type MasteryEvidence, type StudentProfile, type SupportProfile } from "@/lib/lesson";
 import { loadFrame, loadLesson, loadMastery, loadSupport, saveMastery, saveSupport } from "@/lib/lesson-store";
 
-const preferenceLabels: Record<keyof SupportProfile, string> = { captions: "強化即時字幕", simplifiedText: "使用白話短句", focusSteps: "一次顯示一步", colorSafe: "色覺安全配色", textToSpeech: "提供文字朗讀", reducedMotion: "減少畫面動態", advancedChallenge: "提供進階挑戰" };
+type BooleanSupportKey = Exclude<keyof SupportProfile, "reading">;
+const preferenceLabels: Record<BooleanSupportKey, string> = { captions: "強化即時字幕", simplifiedText: "使用白話短句", focusSteps: "一次顯示一步", colorSafe: "色覺安全配色", textToSpeech: "提供文字朗讀", reducedMotion: "減少畫面動態", advancedChallenge: "提供進階挑戰" };
 const stateLabels: Record<MasteryEvidence["state"], string> = { unknown: "尚未取得證據", "needs-check": "需要再確認", developing: "正在建立理解", ready: "目前可繼續" };
 
 function speak(text: string) { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.lang = "zh-TW"; utterance.rate = 0.85; speechSynthesis.speak(utterance); }
@@ -23,6 +25,7 @@ export default function LearnPage() {
   const [supportOpen, setSupportOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [focusIndex, setFocusIndex] = useState(0);
+  const [readingLineIndex, setReadingLineIndex] = useState(0);
   const [notice, setNotice] = useState("");
   const channel = useRef<BroadcastChannel | null>(null);
 
@@ -36,39 +39,47 @@ export default function LearnPage() {
     const profile = stored.profiles.find(item => item.id === studentId) || stored.profiles[0];
     setStudent(profile); setStage(nextStage); setSupport(loadSupport(profile.id, profile.support)); setMastery(loadMastery(profile.id)); setFrame(loadFrame());
     if (typeof BroadcastChannel !== "undefined") {
-      const bus = new BroadcastChannel("edubridge-classroom-v2"); channel.current = bus;
-      bus.onmessage = event => { if (event.data?.type === "frame" && event.data.frame?.lessonId === stored.id) { setFrame(event.data.frame); setSupportOpen(false); setFocusIndex(0); } };
+      const bus = new BroadcastChannel("edubridge-classroom-v3"); channel.current = bus;
+      bus.onmessage = event => {
+        if (event.data?.type === "frame" && event.data.frame?.lessonId === stored.id) { setFrame(event.data.frame); setSupportOpen(false); setFocusIndex(0); setReadingLineIndex(0); }
+        if (event.data?.type === "mastery" && event.data.studentId === profile.id) setMastery(loadMastery(profile.id));
+      };
     }
-    const storage = (event: StorageEvent) => { if (event.key === "edubridge-live-frame-v2") setFrame(loadFrame()); };
+    const storage = (event: StorageEvent) => { if (event.key === "edubridge-live-frame-v3") setFrame(loadFrame()); };
     addEventListener("storage", storage);
     return () => { channel.current?.close(); removeEventListener("storage", storage); };
   }, []);
 
   const currentQuestion = lesson?.questions[questionIndex];
   const activeNode = lesson?.nodes.find(node => node.id === frame?.activeConceptId) || null;
+  const activeSlide = lesson?.slides.find(slide => slide.id === frame?.activeSlideId) || lesson?.slides[0] || null;
   const activeCard = lesson?.cards.find(card => card.id === frame?.decision?.supportCardId) || null;
   const sources = lesson?.materials.filter(item => frame?.decision?.sourceIds.includes(item.id)) || [];
   const evidence = activeNode ? mastery.find(item => item.conceptId === activeNode.id) : undefined;
   const quickQuestion = lesson?.questions.find(question => activeNode && question.conceptIds.includes(activeNode.id));
   const cardText = support?.simplifiedText ? activeCard?.simplifiedText : activeCard?.baseText;
-  const className = `site-root learner ${support?.colorSafe ? "color-safe" : ""} ${support?.reducedMotion ? "reduced-motion" : ""}`;
+  const transcriptText = frame?.transcriptSegments.filter(segment => segment.quality !== "silence").slice(-3).map(segment => segment.text).join(" ") || "";
+  const className = `site-root learner ${support?.colorSafe ? "color-safe" : ""} ${support?.reducedMotion ? "reduced-motion" : ""} line-${support?.reading.lineSpacing || "standard"} focus-${support?.reading.lineFocus || "off"}`;
+  const learnerStyle = { "--reader-scale": support?.reading.fontScale || 1 } as CSSProperties;
   const completed = answered.length >= (lesson?.questions.length || 0);
   const masterySummary = useMemo(() => lesson?.nodes.map(node => ({ node, evidence: mastery.find(item => item.conceptId === node.id) })) || [], [lesson, mastery]);
+  const lineWindow = support?.reading.lineFocus === "one" ? 1 : support?.reading.lineFocus === "three" ? 3 : Number.POSITIVE_INFINITY;
 
-  function commitEvidence(conceptIds: string[], correct: boolean) {
+  function commitEvidence(conceptIds: string[], correct: boolean, kind: "pretest" | "live-check", questionId: string) {
     if (!student) return;
     const next = [...mastery];
-    for (const id of conceptIds) { const index = next.findIndex(item => item.conceptId === id); const updated = updateMastery(index >= 0 ? next[index] : undefined, id, correct); if (index >= 0) next[index] = updated; else next.push(updated); }
+    for (const id of conceptIds) { const index = next.findIndex(item => item.conceptId === id); const updated = updateMastery(index >= 0 ? next[index] : undefined, id, correct, kind, questionId); if (index >= 0) next[index] = updated; else next.push(updated); }
     setMastery(next); saveMastery(student.id, next); channel.current?.postMessage({ type: "mastery", studentId: student.id });
   }
 
   function answerPretest(index: number) {
     if (!currentQuestion || answered.includes(currentQuestion.id)) return;
-    setSelected(index); setAnswered(items => [...items, currentQuestion.id]); commitEvidence(currentQuestion.conceptIds, index === currentQuestion.correctIndex);
+    setSelected(index); setAnswered(items => [...items, currentQuestion.id]); commitEvidence(currentQuestion.conceptIds, index === currentQuestion.correctIndex, "pretest", currentQuestion.id);
   }
 
   function nextQuestion() { if (!lesson) return; setQuestionIndex(index => Math.min(index + 1, lesson.questions.length - 1)); setSelected(null); }
-  function changeSupport(key: keyof SupportProfile, value: boolean) { if (!support || !student) return; const next = { ...support, [key]: value }; setSupport(next); saveSupport(student.id, next); }
+  function changeSupport(key: BooleanSupportKey, value: boolean) { if (!support || !student) return; const next = { ...support, [key]: value }; setSupport(next); saveSupport(student.id, next); }
+  function changeReading<K extends keyof SupportProfile["reading"]>(key: K, value: SupportProfile["reading"][K]) { if (!support || !student) return; const next = { ...support, reading: { ...support.reading, [key]: value } }; setSupport(next); saveSupport(student.id, next); }
 
   if (!lesson || !student || !support) return <div className="site-root"><BrandHeader active="learn" /><main className="empty-page"><StatusPill tone="amber">找不到課程包</StatusPill><h1>請先由教師發布本堂課</h1><p>競賽版不使用學生帳號，課程與匿名設定會保存在同一瀏覽器。</p><a className="button primary" href="/prepare">前往課前準備</a></main><PageFooter /></div>;
 
@@ -77,14 +88,14 @@ export default function LearnPage() {
     {!completed || selected !== null ? <section className="pretest-card"><div className="question-progress"><span style={{ width: `${((questionIndex + 1) / lesson.questions.length) * 100}%` }} /></div><small>請選擇最符合目前理解的答案</small><h2>{currentQuestion?.prompt}</h2><div className="answer-list">{currentQuestion?.options.map((option, index) => <button key={option} disabled={selected !== null} className={selected === index ? (index === currentQuestion.correctIndex ? "correct" : "selected") : ""} onClick={() => answerPretest(index)}><b>{String.fromCharCode(65 + index)}</b><span>{option}</span></button>)}</div>{selected !== null && currentQuestion && <div className="feedback"><StatusPill tone={selected === currentQuestion.correctIndex ? "teal" : "amber"}>{selected === currentQuestion.correctIndex ? "目前理解正確" : "需要再確認"}</StatusPill><p>{currentQuestion.feedback}</p><small>一次作答不代表固定能力，課中的理解檢核仍會更新狀態。</small>{questionIndex < lesson.questions.length - 1 ? <button className="primary" onClick={nextQuestion}>下一題</button> : <button className="primary" onClick={() => { setSelected(null); setQuestionIndex(lesson.questions.length - 1); }}>查看結果</button>}</div>}</section> : <section className="pretest-card"><StatusPill>前測完成</StatusPill><h2>這是暫時的學習證據，不是能力判定。</h2><div className="mastery-list">{masterySummary.map(({ node, evidence: item }) => <div key={node.id}><b>{node.label}</b><span className={item?.state || "unknown"}>{stateLabels[item?.state || "unknown"]}</span></div>)}</div><div className="hero-actions"><a className="button primary" href={`/learn?stage=live&student=${student.id}`}>進入課堂畫面</a><button onClick={() => { saveMastery(student.id, []); setMastery([]); setAnswered([]); setQuestionIndex(0); }}>清除並重新作答</button></div></section>}
   </main><PageFooter /></div>;
 
-  return <div className={className}><BrandHeader active="learn" actions={<button className="preference-button" onClick={() => setPreferencesOpen(value => !value)} aria-expanded={preferencesOpen}>我的呈現偏好</button>} />
-    {preferencesOpen && <section className="preference-drawer"><header><div><small>僅儲存在這台裝置</small><h2>我的呈現偏好</h2></div><button onClick={() => setPreferencesOpen(false)}>關閉</button></header><div>{(Object.keys(support) as Array<keyof SupportProfile>).map(key => <label key={key}><input type="checkbox" checked={support[key]} onChange={event => changeSupport(key, event.target.checked)} />{preferenceLabels[key]}</label>)}</div><p>這些是功能選擇，不是醫療或特殊教育診斷。</p></section>}
+  return <div className={className} style={learnerStyle}><BrandHeader active="learn" actions={<button className="preference-button" onClick={() => setPreferencesOpen(value => !value)} aria-expanded={preferencesOpen}>我的呈現偏好</button>} />
+    {preferencesOpen && <section className="preference-drawer"><header><div><small>僅儲存在這台裝置</small><h2>我的呈現偏好</h2></div><button onClick={() => setPreferencesOpen(false)}>關閉</button></header><div>{(Object.keys(preferenceLabels) as BooleanSupportKey[]).map(key => <label key={key}><input type="checkbox" checked={support[key]} onChange={event => changeSupport(key, event.target.checked)} />{preferenceLabels[key]}</label>)}</div><div className="reading-controls"><label>字級<select value={support.reading.fontScale} onChange={event => changeReading("fontScale", Number(event.target.value) as 1 | 1.2 | 1.4)}><option value="1">100%</option><option value="1.2">120%</option><option value="1.4">140%</option></select></label><label>行距<select value={support.reading.lineSpacing} onChange={event => changeReading("lineSpacing", event.target.value as SupportProfile["reading"]["lineSpacing"])}><option value="standard">標準</option><option value="relaxed">寬鬆</option><option value="wide">極寬</option></select></label><label>逐行聚焦<select value={support.reading.lineFocus} onChange={event => changeReading("lineFocus", event.target.value as SupportProfile["reading"]["lineFocus"])}><option value="off">關閉</option><option value="one">1 行</option><option value="three">3 行</option></select></label></div><p>這些是功能選擇，不是醫療或特殊教育診斷。</p></section>}
     <main className="student-shell live-learning"><section className="live-course-head"><div><StatusPill>{frame?.paused ? "教師已暫停 AI" : "課堂同步中"}</StatusPill><h1>{lesson.title}</h1></div><span>{student.displayName}</span></section>
-      <div className="student-learning-grid"><section className="learning-main"><div className="student-canvas">{activeNode ? <><small>教師目前講到</small><h2>{activeNode.label}</h2><p>{activeNode.description}</p><div className="concept-keywords">{activeNode.aliases.map(alias => <span key={alias}>{alias}</span>)}</div></> : <><small>本堂學習目標</small><h2>{lesson.objective}</h2><p>等待教師開始授課；沒有足夠證據時，系統不會猜測概念。</p></>}</div>
-        <section className={`student-caption ${support.captions ? "enhanced" : ""}`} aria-live="polite"><header><b>教師即時字幕</b><small>自動辨識可能有誤，以教師說明為準</small></header><p>{frame?.transcript || "等待教師端同步字幕…"}</p></section>
+      <div className="student-learning-grid"><section className="learning-main"><div className="student-canvas accessible-slide">{activeSlide ? <><small>依教材文字建立的教學檢視 · 第 {activeSlide.order}/{lesson.slides.length} 頁</small><h2>{activeSlide.title}</h2><ul>{activeSlide.body.map((line, index) => <li className={index >= readingLineIndex && index < readingLineIndex + lineWindow ? "reading-line active" : "reading-line dimmed"} key={`${line}-${index}`}>{line}</li>)}</ul>{support.reading.lineFocus !== "off" && <div className="line-focus-controls" aria-label="逐行聚焦控制"><button disabled={readingLineIndex === 0} onClick={() => setReadingLineIndex(index => Math.max(0, index - lineWindow))}>往前</button><span>聚焦第 {readingLineIndex + 1}–{Math.min(activeSlide.body.length, readingLineIndex + lineWindow)} 行</span><button disabled={readingLineIndex + lineWindow >= activeSlide.body.length} onClick={() => setReadingLineIndex(index => Math.min(Math.max(0, activeSlide.body.length - lineWindow), index + lineWindow))}>往後</button></div>}{activeNode && <div className="concept-keywords"><span>教師目前講到：{activeNode.label}</span>{activeNode.aliases.map(alias => <span key={alias}>{alias}</span>)}</div>}</> : <><small>本堂學習目標</small><h2>{lesson.objective}</h2><p>等待教師開始授課；沒有足夠證據時，系統不會猜測概念。</p></>}</div>
+        <section className={`student-caption ${support.captions ? "enhanced" : ""}`} aria-live="polite"><header><b>教師即時字幕</b><small>{frame?.transcriptSegments.at(-1)?.quality === "review" ? "此段待教師確認，不會觸發支援卡" : "自動辨識可能有誤，以教師說明為準"}</small></header><p>{transcriptText || "等待教師端同步字幕…"}</p></section>
       </section><aside className="support-rail"><section className={`support-prompt ${activeCard ? "available" : ""}`}><small>當下學習支援</small>{activeCard ? <><h2>需要補充「{activeCard.title}」嗎？</h2><p>系統找到一張經教師確認、與目前內容相符的卡片。</p><button className="primary" onClick={() => setSupportOpen(value => !value)}>{supportOpen ? "收合補充" : "由我展開補充"}</button></> : <><h2>目前不需要額外卡片</h2><p>字幕會持續顯示；系統不會為了填滿畫面而生成內容。</p></>}</section>
         {supportOpen && activeCard && <section className="support-card"><div className="support-card-head"><StatusPill>{evidence ? stateLabels[evidence.state] : "尚未取得前測證據"}</StatusPill>{support.textToSpeech && <button onClick={() => speak(cardText || "")}>朗讀</button>}</div><h2>{activeCard.title}</h2>{support.focusSteps ? <div className="focus-support"><small>一次只看一個步驟 · {focusIndex + 1}/{activeCard.focusSteps.length}</small><p>{activeCard.focusSteps[focusIndex]}</p><div><button disabled={focusIndex === 0} onClick={() => setFocusIndex(index => Math.max(0, index - 1))}>上一步</button><button disabled={focusIndex >= activeCard.focusSteps.length - 1} onClick={() => setFocusIndex(index => Math.min(activeCard.focusSteps.length - 1, index + 1))}>下一步</button></div></div> : <p className="support-text">{cardText}</p>}<div className="concept-keywords">{activeCard.keywords.map(keyword => <span key={keyword}>{keyword}</span>)}</div>{support.advancedChallenge && <div className="advanced"><b>進階挑戰</b><p>{activeCard.advancedPrompt}</p></div>}<details><summary>為什麼現在顯示？</summary><p>{frame?.decision?.reason}</p>{sources.map(item => <p key={item.id}><b>{item.location}</b>{item.sourceUrl && <> · <a href={item.sourceUrl} target="_blank" rel="noreferrer">官方來源 ↗</a></>}</p>)}</details></section>}
-        {supportOpen && quickQuestion && <QuickCheck key={quickQuestion.id} question={quickQuestion} onAnswer={correct => { commitEvidence(quickQuestion.conceptIds, correct); setNotice(correct ? "理解證據已更新。" : "已標記為需要再確認，不代表你不會。"); }} />}
+        {supportOpen && quickQuestion && <QuickCheck key={quickQuestion.id} question={quickQuestion} onAnswer={correct => { commitEvidence(quickQuestion.conceptIds, correct, "live-check", quickQuestion.id); setNotice(correct ? "理解證據已更新。" : "已標記為需要再確認，不代表你不會。"); }} />}
         <button className="quiet-help" onClick={() => { channel.current?.postMessage({ type: "help", studentId: student.id }); setNotice("已私密通知教師，其他同學不會看到。"); }}>安靜舉手：我需要協助</button>{notice && <p className="student-notice" role="status">{notice}</p>}
       </aside></div>
     </main><PageFooter /></div>;
